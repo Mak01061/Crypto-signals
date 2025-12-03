@@ -1,0 +1,148 @@
+const TelegramBot = require('node-telegram-bot-api');
+const fetch = require('node-fetch');
+
+// Your bot token (we'll add this in Secrets)
+const TOKEN = process.env.BOT_TOKEN;
+const bot = new TelegramBot(TOKEN, { polling: true });
+
+let signals = [];
+let subscribers = new Set();
+let prices = {};
+
+const pairs = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT'];
+
+// Fetch live prices
+async function updatePrices() {
+  try {
+    const res = await fetch('https://api.binance.com/api/v3/ticker/price');
+    const data = await res.json();
+    data.forEach(item => {
+      if (pairs.includes(item.symbol)) {
+        prices[item.symbol] = parseFloat(item.price);
+      }
+    });
+  } catch (err) {
+    console.log('Price fetch error');
+  }
+}
+
+// Generate signal
+function makeSignal() {
+  const pair = pairs[Math.floor(Math.random() * pairs.length)];
+  const price = prices[pair];
+  if (!price) return null;
+  
+  const direction = Math.random() > 0.5 ? 'BUY' : 'SELL';
+  const entry = price;
+  
+  let tp1, tp2, tp3, sl;
+  if (direction === 'BUY') {
+    tp1 = entry * 1.015;
+    tp2 = entry * 1.025;
+    tp3 = entry * 1.035;
+    sl = entry * 0.985;
+  } else {
+    tp1 = entry * 0.985;
+    tp2 = entry * 0.975;
+    tp3 = entry * 0.965;
+    sl = entry * 1.015;
+  }
+  
+  return {
+    pair: pair.replace('USDT', '/USDT'),
+    direction,
+    entry: entry.toFixed(2),
+    tp1: tp1.toFixed(2),
+    tp2: tp2.toFixed(2),
+    tp3: tp3.toFixed(2),
+    sl: sl.toFixed(2),
+    time: new Date().toLocaleString()
+  };
+}
+
+// Format signal message
+function formatSignal(sig) {
+  const emoji = sig.direction === 'BUY' ? '🟢' : '🔴';
+  return `
+${emoji} *${sig.pair} ${sig.direction}* ${emoji}
+
+📊 Entry: $${sig.entry}
+
+🎯 Take Profits:
+TP1: $${sig.tp1}
+TP2: $${sig.tp2}
+TP3: $${sig.tp3}
+
+🛑 Stop Loss: $${sig.sl}
+
+⏰ ${sig.time}
+  `;
+}
+
+// Commands
+bot.onText(/\/start/, (msg) => {
+  const chatId = msg.chat.id;
+  subscribers.add(chatId);
+  bot.sendMessage(chatId, `
+🤖 *Welcome to Crypto Signals Bot!*
+
+You'll receive trading signals automatically.
+
+Commands:
+/start - Subscribe
+/stop - Unsubscribe
+/signal - Get new signal
+/price - Check BTC price
+
+🔴 Bot is LIVE!
+  `, { parse_mode: 'Markdown' });
+});
+
+bot.onText(/\/stop/, (msg) => {
+  subscribers.delete(msg.chat.id);
+  bot.sendMessage(msg.chat.id, '👋 Unsubscribed!');
+});
+
+bot.onText(/\/signal/, (msg) => {
+  const signal = makeSignal();
+  if (signal) {
+    bot.sendMessage(msg.chat.id, formatSignal(signal), { parse_mode: 'Markdown' });
+  }
+});
+
+bot.onText(/\/price/, (msg) => {
+  const btc = prices['BTCUSDT'];
+  bot.sendMessage(msg.chat.id, `💰 BTC: $${btc ? btc.toFixed(2) : 'Loading...'}`);
+});
+
+// Broadcast signal
+function broadcast(signal) {
+  const message = formatSignal(signal);
+  subscribers.forEach(chatId => {
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' })
+      .catch(err => console.log('Send error'));
+  });
+}
+
+// Start
+async function start() {
+  console.log('🤖 Bot starting...');
+  await updatePrices();
+  console.log('✅ Prices loaded');
+  
+  // Update prices every 10 seconds
+  setInterval(updatePrices, 10000);
+  
+  // Send signal every 3 minutes
+  setInterval(() => {
+    const signal = makeSignal();
+    if (signal && subscribers.size > 0) {
+      console.log('📊 Broadcasting signal');
+      broadcast(signal);
+    }
+  }, 3 * 60 * 1000);
+  
+  console.log('✅ Bot running!');
+}
+
+start();
